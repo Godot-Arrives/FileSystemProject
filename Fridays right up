@@ -1,0 +1,10 @@
+So I will be happy to do the write up that’s due Friday. I am sure it does not need to be exact because we all know implementation usually ends up being a little different than design. If you want to submit any ideas or thoughts I can write the paper and send it back to everybody for review before I submit it. 
+A few points to address:
+1.	Are we doing the garbage collector for bonus points? I would like to try because I need the points, but I really have no idea how it would work.
+2.	We should probably address a few things from ch7 (at least in the write up). Mabey protection, sharing, and organization.
+3.	For the open file list mentioned above in main memory. Is this a list of table structures containing name, pointer, size….? Role/service
+4.	It also looks like we have fixed length blocks (correct me if I am wrong). What happens if the file is bigger than the block? I am not sure if he will test that feature, but maybe we can do some kind of test if file size>block, pointer to end of file, pointer to new block….etc…
+5.	When the garbage collector is used, will it access the used space table, set the data back to all ones, remove from file allocation table/file list, and add to free space table?
+6.	Should we have a method to keep free and used space contiguous, or do we not care because blocks are fixed size?
+
+Just thinking out loud. Let me know what you think!
