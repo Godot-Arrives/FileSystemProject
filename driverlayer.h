@@ -2,7 +2,7 @@
 #include <windows.h>
 
 #define nFileSizeBytes 1310720
-#define nSectorSizeBytes 1310720/20
+#define nSectorSizeBytes 65536
 
 enum layerErrors
 {

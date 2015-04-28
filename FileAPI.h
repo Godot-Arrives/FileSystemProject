@@ -12,7 +12,7 @@ typedef struct FILEHEADER
 {
 	char filename[64];
 	UINT8 portionType;
-	DWORD nFileSizeWords;
+	UINT16 fileSizeBytes;
 } FILEHEADER;
 
 #define HEADER_SIZE_BYTES 96
@@ -26,6 +26,7 @@ typedef struct CSC322FILE
 	int filesize;	
 	LPVOID inMemoryFile;
 	bool modified;
+	bool headerExists;
 } CSC322FILE;
 
 typedef struct FNODE
@@ -59,7 +60,7 @@ int CSC322_fseek(CSC322FILE *stream,
 
 long CSC322_ftell(CSC322FILE *stream);
 
-bool CSC322_remove(const char *filename);
+int CSC322_remove(const char *filename);
 
 // *********************************** Service Functions *************************************
 

@@ -3,5 +3,8 @@
 
 int main()
 {
+
+	garbageCollect();
+
 	return 0;
 }

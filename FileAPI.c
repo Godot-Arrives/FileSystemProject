@@ -12,9 +12,8 @@
 CSC322FILE *CSC322_fopen(const char *filename,
 		      const char *mode)
 {
-	// (PSEU)	
-	// Check if file is open
-	// Return Failure if so.
+	if(findOpenFile(filename) != NULL)
+		return NULL;
 	
 	FILEHEADER searchHeader;
 	UINT32 searchLocation = 0;
@@ -26,7 +25,7 @@ CSC322FILE *CSC322_fopen(const char *filename,
 			   searchLocation,
 			   sizeof(FILEHEADER));
 
-		if(strcmp(filename, searchHeader.filename) != 0 && searchHeader.portionType == 0x0F)
+		if(strcmp(filename, searchHeader.filename) == 0 && searchHeader.portionType == 0x0F)
 		{
 			found = true;
 			break;
@@ -41,27 +40,38 @@ CSC322FILE *CSC322_fopen(const char *filename,
 			continue;
 		}
 
-		searchLocation += sizeof(FILEHEADER) + searchHeader.nFileSizeWords*2;
+		searchLocation += sizeof(FILEHEADER) + searchHeader.fileSizeBytes;
 
 	}
-
-	if(!found)
-		return NULL;
 
 	CSC322FILE *requested = createFile(filename,
 					   mode);
 
-	requested->headerLocation = searchLocation;
-	requested->filesize = searchHeader.nFileSizeWords*2;
-	requested->modified = 0;
+	if(found)
+	{
+		requested->headerExists = 1;
+		requested->headerLocation = searchLocation;
+		requested->filesize = searchHeader.fileSizeBytes;
+		requested->modified = 0;
+
+	}
+	else
+	{
+		requested->headerExists = 0;
+		requested->filesize = 0;
+		requested->modified = 0;
+		requested->inMemoryFile = NULL;
+		requested->filepointer = NULL;
+		return requested;
+	}
 
 	requested->inMemoryFile = HeapAlloc(GetProcessHeap(),
-				    0,
-				    requested->filesize);
+					    HEAP_ZERO_MEMORY,
+					    requested->filesize);
 
 
 	readBuffer(requested->inMemoryFile,
-		   requested->headerLocation + HEADER_SIZE_BYTES,
+		   requested->headerLocation + sizeof(FILEHEADER),
 		   requested->filesize);
 
 	switch(requested->type)
@@ -72,14 +82,14 @@ CSC322FILE *CSC322_fopen(const char *filename,
 		case ab: requested->filepointer = (char *)requested->inMemoryFile + requested->filesize - 1; break;
 		default: requested->filepointer = NULL; break;
 	}
-
+	
 	return requested;
 }
 
 // Complete, not tested. Check on being passed old pointers.
 int CSC322_fclose(CSC322FILE *stream)
 {
-	if(stream == NULL || stream == 0xFEEEFEEE)
+	if(stream == NULL) 
 		return EOF;
 
 	if(!stream->modified)
@@ -92,7 +102,7 @@ int CSC322_fclose(CSC322FILE *stream)
 	UINT32 searchLocation;
 	bool found = false, garbageCollected = false;
 
-	while(!garbageCollected)
+	while(!found)
 	{
 		searchLocation = 0;
 
@@ -113,10 +123,14 @@ int CSC322_fclose(CSC322FILE *stream)
 				continue;
 			}
 
-			searchLocation += sizeof(FILEHEADER) + searchHeader.nFileSizeWords*2;
+			searchLocation += sizeof(FILEHEADER) + searchHeader.fileSizeBytes;
 
 		}
 
+		if(!found && garbageCollected)
+		{
+			break;
+		}
 		if(!found)
 		{
 			garbageCollect();
@@ -129,21 +143,24 @@ int CSC322_fclose(CSC322FILE *stream)
 
 	FILEHEADER usedHeader;
 
-	readBuffer(&usedHeader,
-		   stream->headerLocation,
-		   sizeof(FILEHEADER));
+	if(stream->headerExists)
+	{
+		readBuffer(&usedHeader,
+			   stream->headerLocation,
+			   sizeof(FILEHEADER));
 
-	usedHeader.portionType = 0x00;
+		usedHeader.portionType = 0x00;
 
-	writeBuffer(&usedHeader,
-		    stream->headerLocation,
-		    sizeof(FILEHEADER));
+		writeBuffer(&usedHeader,
+			    stream->headerLocation,
+			    sizeof(FILEHEADER));
+	}
 
 
 	strcpy(searchHeader.filename, stream->filename);
 
 	searchHeader.portionType = 0x0F;
-	searchHeader.nFileSizeWords = stream->filesize/2 + stream->filesize%2;
+	searchHeader.fileSizeBytes = stream->filesize;
 
 	writeBuffer(&searchHeader,
 		    searchLocation,
@@ -164,7 +181,7 @@ int CSC322_fread(LPVOID buffer,
 		 int count,
 		 CSC322FILE *stream)
 {
-	if(buffer == NULL || stream->type == wb || stream->type == ab)
+	if(buffer == NULL || (char *)stream->filepointer > (char *)stream->inMemoryFile + stream->filesize - 1 || stream->type == wb || stream->type == ab)
 		return 0;
 
 	int readLength = size * count;
@@ -174,6 +191,8 @@ int CSC322_fread(LPVOID buffer,
 	CopyMemory(buffer,
 		   stream->filepointer,
 		   size*readCount);
+
+	stream->filepointer = (char *)stream->filepointer + readLength;
 
 	return readCount;
 }
@@ -187,18 +206,22 @@ int CSC322_fwrite(LPVOID buffer,
 	if(stream == NULL || stream->type == rb)
 	       return 0;
 
+	stream->modified = true;
 	int writeLength = size * count;
 	int newsize = (char *)stream->filepointer + writeLength - (char *)stream->inMemoryFile;
 
 	if(newsize > stream->filesize)
 	{
 		LPVOID pBiggerFile = HeapAlloc(GetProcessHeap(),
-					       0,
+					       HEAP_ZERO_MEMORY,
 					       newsize);
 
-		CopyMemory(pBiggerFile,
-			   stream->inMemoryFile,
-			   stream->filesize);
+		if(stream->filesize > 0)
+		{
+			CopyMemory(pBiggerFile,
+				   stream->inMemoryFile,
+				   stream->filesize);
+		}
 
 		LPVOID newFilePointer = (char *)pBiggerFile + ((char *)stream->filepointer - (char *)stream->inMemoryFile);
 
@@ -206,12 +229,15 @@ int CSC322_fwrite(LPVOID buffer,
 			   buffer,
 			   writeLength);
 
-		HeapFree(GetProcessHeap(),
-			 0,
-			 stream->inMemoryFile);
+		if(stream->filesize > 0)
+		{
+			HeapFree(GetProcessHeap(),
+				 0,
+				 stream->inMemoryFile);
+		}
 
 		stream->inMemoryFile = pBiggerFile;
-		stream->filepointer = newFilePointer;
+		stream->filepointer = (char *)newFilePointer + writeLength;
 		stream->filesize = newsize;
 	}
 	else
@@ -260,31 +286,81 @@ int CSC322_fseek(CSC322FILE *stream,
 		return 2;
 }
 
+// Complete, not tested.
 long CSC322_ftell(CSC322FILE *stream)
 {
 	return long((char *)stream->filepointer - (char *)stream->inMemoryFile);
 }
 
-bool CSC322_remove(const char *filename)
+// In progress.
+int CSC322_remove(const char *filename)
 {
+	if(findOpenFile(filename) != NULL)
+		return -1;
+
+	FILEHEADER searchHeader;
+	UINT32 searchLocation = 0;
+	bool found = false;
+
+	while(thisSector(searchLocation) < 19)
+	{
+		readBuffer(&searchHeader,
+			   searchLocation,
+			   sizeof(FILEHEADER));
+
+		if(strcmp(filename, searchHeader.filename) == 0 && searchHeader.portionType == 0x0F)
+		{
+			found = true;
+			break;
+		}
+	       	else if(searchHeader.portionType == 0xFF && thisSector(searchLocation) == 19)
+		{
+			break;
+		}
+		else if(searchHeader.portionType == 0xFF)
+		{
+			searchLocation = (1 + thisSector(searchLocation))*nSectorSizeBytes;
+			continue;
+		}
+
+		searchLocation += sizeof(FILEHEADER) + searchHeader.fileSizeBytes;
+
+	}
+
+	if(!found)
+		return -1;
+
+	searchHeader.portionType = 0x00;
+
+	writeBuffer(&searchHeader,
+		    searchLocation,
+		    sizeof(FILEHEADER));
+
 	return 0;
 }
 
 // *********************************** Service Functions *************************************
 
 
+// Complete, not tested.
 CSC322FILE* findOpenFile(const char *filename)
 {
-	return NULL;
+	FNODE *search = head;
+
+	while(search != NULL && strcmp(search->file.filename, filename))
+		search = search->next;
+
+	return &(search->file);
 }
 
-// In progress
+// Complete, not tested.
 CSC322FILE* createFile(const char *filename,
 	       	     const char *mode)
 {
 	FNODE newFNODE;
 	
 	strcpy(newFNODE.file.filename, filename);
+	newFNODE.next = NULL;
 	
 	if(!strcmp(mode, "ab"))
 		newFNODE.file.type = ab;
@@ -298,13 +374,22 @@ CSC322FILE* createFile(const char *filename,
 		return NULL;
 
 	FNODE *pFNODE = (FNODE *)HeapAlloc(GetProcessHeap(),
-					     0,
+					     HEAP_ZERO_MEMORY,
 					     sizeof(FNODE));
 
 	*pFNODE = newFNODE;
 
-	// (PSEU)
-	// Append to open file list
+	if(head == NULL)
+		head = pFNODE;
+	else
+	{
+		FNODE *search = head;
+
+		while(search->next != NULL)
+			search = search->next;
+
+		search->next = pFNODE;
+	}
 	
 	return &(pFNODE->file);
 }
@@ -314,7 +399,7 @@ void closeNode(const char *filename)
 {
 	FNODE *pSearch = head, *pPrev = head;
 
-	while(pSearch != NULL && !strcmp(pSearch->file.filename, filename))
+	while(pSearch != NULL && strcmp(pSearch->file.filename, filename))
 	{
 		pSearch = pSearch->next;
 		pPrev = pSearch;
@@ -323,7 +408,14 @@ void closeNode(const char *filename)
 	if(pSearch == NULL)
 		return;
 
-	pPrev->next = pSearch->next;
+	if(pSearch == pPrev)
+	{
+		head = head->next;
+	}
+	else
+	{
+		pPrev->next = pSearch->next;
+	}
 
 	HeapFree(GetProcessHeap(),
 		 0,
@@ -332,12 +424,13 @@ void closeNode(const char *filename)
 	return;
 }
 
-// Complete, not tested. 
+// Complete, tested. 
 void readBuffer(LPVOID buffer,
 		UINT32 location,
 		int lengthBytes)
 {
 	int word = 0;
+	UINT16 data;
 
 	// Misaligned first byte.
 	if(location % 2 == 1)
@@ -347,19 +440,21 @@ void readBuffer(LPVOID buffer,
 	}
 
 	// All aligned words.
-	for(word; word < lengthBytes/2*2; word++)
+	for(word; (word + 1)*2 - location%2 <= lengthBytes; word++)
 	{
-		*(UINT16 *)((char *)buffer + word*2) = ReadWord(location + word*2);
+		data = ReadWord(location - location%2 + word*2);
+		*((char *)buffer + word*2 - location%2) = *(char *)&data; 
+		*((char *)buffer + word*2 - location%2 + 1) = *((char *)&data + 1);
 	}
 	
 	// Misaligned last byte.
-	if(lengthBytes % 2 == 1 && location % 2 == 1)
+	if((location + lengthBytes) % 2 == 1)
 	{
 		*(UINT8 *)((char *)buffer + word*2 + 1) = (ReadWord(location + word*2 + 2) >> 8);
 	}
 }
 
-// Complete, not tested.
+// Complete, tested.
 void writeBuffer(LPVOID buffer,
 		 UINT32 location,
 		 int lengthBytes)
@@ -377,32 +472,140 @@ void writeBuffer(LPVOID buffer,
 	}
 
 	// All aligned words.
-	for(word; word < lengthBytes/2*2; word++)
+	for(word; (word + 1)*2 - location%2 <= lengthBytes; word++)
 	{
-		data = *(UINT16 *)((char *)buffer + word*2);
-		WriteWord(location + word, data);
+		data = *( (UINT16 *)buffer + word);
+		// data = ((UINT16)(*((char *)buffer + word*2)) << 8) | *((char *)buffer + word*2 + 1);
+		WriteWord(location - location%2 + word*2, data);
 	}
 
 	// Misaligned last byte.
-	if(lengthBytes % 2 == 1 && location % 2 == 1)
+	if((location + lengthBytes) % 2 == 1)
 	{
-		data = ReadWord(location + word*2 + 2);
-		data = (data & 0x00FF) | ( *(UINT16 *)((char *)buffer + word*2 + 1) << 8);
-		WriteWord(location + word + 2, data);
+		data = ReadWord(location - location%2 + word*2);
+		data = (data & 0xFF00) | ((UINT8)(*((char *)buffer + word*2 + 1))) ;
+		WriteWord(location - location%2 + word*2, data);
 	}
 }
 
-// Complete, not tested
+// Complete, tested.
 int thisSector(int nLocationBytes)
 {
-	int sector = 0;
-
-	while(nLocationBytes / nSectorSizeBytes < sector)
-		sector++;
-
-	return sector;
+	return nLocationBytes / nSectorSizeBytes;
 }
 
 void garbageCollect()
 {
+	FNODE *wp = head;
+	FILEHEADER killFile;
+
+	while(wp != NULL)
+	{
+		if(wp->file.headerExists)
+		{
+			readBuffer(&killFile,
+				   wp->file.headerLocation,
+				   sizeof(FILEHEADER));
+
+			killFile.portionType = 0x00;
+
+			writeBuffer(&killFile,
+				    wp->file.headerLocation,
+				    sizeof(FILEHEADER));
+		}
+
+		wp->file.headerExists = false;
+		wp->file.modified = true;
+
+		wp = wp->next;
+	}
+
+	FILEHEADER collectionHeader;
+
+	int searchLocation = 0, 
+	    writeBackLocation = 0, 
+	    tempLocation = 19*nSectorSizeBytes, 
+	    tempWriteBack = 19*nSectorSizeBytes,
+	    opSector = 0;
+
+	LPVOID tempFileHolder;
+
+	while(thisSector(searchLocation) < 19)
+	{
+		while(thisSector(searchLocation) == opSector)
+		{
+			readBuffer(&collectionHeader,
+				   searchLocation,
+			   	   sizeof(FILEHEADER));	
+
+			if(collectionHeader.portionType == 0x0F)
+			{
+				tempFileHolder = HeapAlloc(GetProcessHeap(),
+							   HEAP_ZERO_MEMORY,
+							   collectionHeader.fileSizeBytes + sizeof(FILEHEADER));
+
+				readBuffer(tempFileHolder,
+					   searchLocation,
+					   collectionHeader.fileSizeBytes + sizeof(FILEHEADER));
+
+				writeBuffer(tempFileHolder,
+					    tempLocation,
+					    collectionHeader.fileSizeBytes + sizeof(FILEHEADER));
+
+				HeapFree(GetProcessHeap(),
+					 0,
+					 tempFileHolder);
+
+				tempLocation += collectionHeader.fileSizeBytes + sizeof(FILEHEADER);
+
+				searchLocation += collectionHeader.fileSizeBytes + sizeof(FILEHEADER);
+			}
+			else if(collectionHeader.portionType == 0xFF)
+			{
+				searchLocation = (thisSector(searchLocation) + 1)*nSectorSizeBytes;
+			}
+			else
+			{
+				searchLocation += collectionHeader.fileSizeBytes + sizeof(FILEHEADER);
+			}
+		}
+
+		EraseSector(opSector);
+
+		readBuffer(&collectionHeader,
+			   tempWriteBack,
+			   sizeof(FILEHEADER));
+
+		while(collectionHeader.portionType == 0x0F)
+		{
+			tempFileHolder = HeapAlloc(GetProcessHeap(),
+						   HEAP_ZERO_MEMORY,
+						   collectionHeader.fileSizeBytes + sizeof(FILEHEADER));
+
+			readBuffer(tempFileHolder,
+				   tempWriteBack,
+				   collectionHeader.fileSizeBytes + sizeof(FILEHEADER));
+
+			writeBuffer(tempFileHolder,
+				    writeBackLocation,
+				    collectionHeader.fileSizeBytes + sizeof(FILEHEADER));
+
+			HeapFree(GetProcessHeap(),
+				 0,
+				 tempFileHolder);
+
+			tempWriteBack += collectionHeader.fileSizeBytes + sizeof(FILEHEADER);
+			writeBackLocation += collectionHeader.fileSizeBytes + sizeof(FILEHEADER);
+
+			readBuffer(&collectionHeader,
+				   tempWriteBack,
+			  	   sizeof(FILEHEADER));
+		}
+
+		EraseSector(19);
+		tempLocation = 19*nSectorSizeBytes;
+	  	tempWriteBack = 19*nSectorSizeBytes;
+		opSector++;
+		writeBackLocation = opSector*nSectorSizeBytes;
+	}
 }
